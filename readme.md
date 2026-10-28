@@ -5,6 +5,8 @@ number as Slack's Activity badge). A dot on the icon means there are other
 unread messages. The dropdown lists unread conversations, and clicking one
 opens it in Slack. Works with multiple workspaces.
 
+![screenshot](screenshot.png)
+
 ## Setup
 
 Clone this repo into `~/.hammerspoon/Spoons/`, then add to your Hammerspoon
