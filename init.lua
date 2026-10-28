@@ -1,20 +1,8 @@
 --- === SlackNotifier ===
 ---
---- Check Slack API periodically and show your unread activity count in a
---- menubar app. The count is Slack's own Activity total (the `activity_v2`
---- figure behind the Activity tab badge): direct messages, mentions, thread
---- replies, reactions, reminders and invites. A number appears only when there
---- is something to report; otherwise the icon simply dims. It always stays in
---- the menu bar, so a quiet menu bar never looks like a crashed spoon.
----
---- A dot on the top right of the icon means there are unread messages that
---- Slack does not badge, so they are not in the activity count: ordinary
---- channel traffic. Muted conversations are excluded, since Slack hides those
---- from the sidebar on purpose. A dotted icon with no number therefore reads
---- as "nothing needs you, but there is unread reading".
----
---- The dropdown lists each unread conversation by name; clicking one opens it
---- in the Slack app. Supports multiple Slack workspaces.
+--- Check Slack API periodically and show your activity count in a menubar app.
+--- A dot on the icon means unread, unmuted messages outside the activity count.
+--- Supports multiple Slack workspaces.
 
 -- luacheck: globals hs
 
@@ -48,10 +36,7 @@ N...........
 
 local activeIcon = hs.image.imageFromASCII(iconAscii)
 
--- Asking imageFromASCII for a half-alpha fill and stroke draws every shape at
--- half opacity, so wherever the strokes overlap the translucent layers
--- accumulate and the glyph comes out mottled rather than evenly faded. Fading
--- the finished solid glyph in a single pass keeps the interior flat.
+-- fade the finished glyph in one pass so overlapping strokes stay even
 local function withAlpha(base, alpha)
 	local size = base:size()
 	local c = hs.canvas.new({ x = 0, y = 0, w = size.w, h = size.h })
@@ -68,8 +53,7 @@ end
 
 local dimmedIcon = withAlpha(activeIcon, 0.5)
 
--- The Slack glyph fills its own 12x14 box, so the unread badge goes on a wider
--- canvas just outside the top right corner rather than on top of the logo.
+-- draw the unread dot just outside the top right corner of the glyph
 local function iconWithDot(base)
 	local c = hs.canvas.new({ x = 0, y = 0, w = 18, h = 14 })
 	c[1] = {
@@ -158,12 +142,7 @@ local channelIcon = createCanvasIcon(function(c, s)
 	}
 end)
 
--- per-workspace state, keyed by the workspace's index in obj.workspaces
---   counts[i]   = { activityCount, unreadCount, starredCount, err }
---   convos[i]   = array of { id, mentions, starred, isIm } for unread conversations
---   extras[i]   = array of { label, count } for activity with no conversation
---   teams[i]    = { id = 'T...', name = 'Acme' }, from auth.test
---   names[i]    = { [conversationId] = 'display name' } resolution cache
+-- per-workspace state, keyed by index in obj.workspaces
 local counts = {}
 local convos = {}
 local extras = {}
@@ -179,8 +158,7 @@ local mutedChannels = {}
 -- last raw client.counts payload per workspace, for debugging
 obj.lastPayloads = {}
 
--- activity_v2 keys that are already covered by the unread conversation list,
--- so we do not report them twice
+-- activity_v2 keys already covered by the conversation list
 local conversationBacked = {
 	dm = true,
 	channel = true,
@@ -192,8 +170,7 @@ local conversationBacked = {
 	bot_dm_bundle = true,
 }
 
--- readable labels for the remaining activity_v2 keys. Each pluralizes with a
--- trailing 's', so keep them noun-shaped.
+-- labels for the remaining activity_v2 keys
 local activityLabels = {
 	message_reaction = 'Reaction',
 	saved_reminder = 'Reminder',
@@ -221,21 +198,16 @@ local function pluralize(count, label)
 	return label .. 's'
 end
 
--- forward declaration: recomputeUnread needs updateMenu, and the mute handler
--- needs recomputeUnread
+-- forward declaration
 local updateMenu
 
--- A conversation earns the dot only if it has unread messages, carries no
--- mention (mentions are already in the activity count) and is not muted. Slack
--- hides muted channels from the sidebar and does not badge them, so counting
--- them here would report unread that Slack itself is deliberately hiding.
+-- unread, unmuted, and not already counted as a mention
 local function isQuietUnread(index, convo)
 	local muted = mutedChannels[index] or {}
 	return convo.unread and convo.mentions == 0 and not muted[convo.id]
 end
 
--- The mute list and the counts arrive from separate requests, so the dot count
--- is derived rather than computed in place: whichever lands last recomputes it.
+-- called by both the counts and the mute handler, whichever lands last
 local function recomputeUnread()
 	for index, c in pairs(counts) do
 		if not c.err then
@@ -273,10 +245,6 @@ function updateMenu()
 		return
 	end
 
-	-- A number is only shown when there is activity to report; the empty state
-	-- is a dimmed icon with no title rather than a zero. The dot says there are
-	-- unread messages the activity count does not cover, so a bare dotted icon
-	-- means "nothing needs you, but there is unread reading".
 	local icon = dimmedIcon
 	if totalUnread > 0 then
 		icon = activeDotIcon
@@ -292,8 +260,7 @@ function updateMenu()
 	obj.menu:setIcon(icon, true):setTitle(title)
 end
 
--- open a conversation in the Slack app. Falls back to the workspace's web URL
--- if we never learned the team ID.
+-- open a conversation in the Slack app
 local function openConversation(index, conversationId)
 	local team = teams[index]
 	if team and team.id then
@@ -303,8 +270,7 @@ local function openConversation(index, conversationId)
 	end
 end
 
--- build dropdown menu items: unread conversations first, then activity that has
--- no conversation to open, then a per-workspace footer
+-- build dropdown menu items
 local function buildMenu()
 	local items = {}
 	local multi = #obj.workspaces > 1
@@ -334,8 +300,7 @@ local function buildMenu()
 			local muted = mutedChannels[i] or {}
 
 			for _, convo in ipairs(convos[i] or {}) do
-				-- a muted conversation with no mention is one Slack is
-				-- deliberately hiding, so keep it out of the list too
+				-- skip muted conversations without mentions
 				if not (muted[convo.id] and convo.mentions == 0) then
 					local name = names[i] and names[i][convo.id]
 					local label = name or (convo.isIm and 'Direct message' or 'Channel')
@@ -406,8 +371,7 @@ local function buildMenu()
 	return items
 end
 
--- resolve a conversation ID to something a human can read, then refresh the
--- menu. Results are cached, so each conversation costs at most two calls once.
+-- resolve a conversation ID to a readable name (cached)
 local function resolveName(index, conversationId, headers, token)
 	names[index] = names[index] or {}
 	if names[index][conversationId] then
@@ -469,8 +433,7 @@ local function resolveName(index, conversationId, headers, token)
 	end)
 end
 
--- create a handler for auth.test, which gives us the team ID needed for deep
--- links and a workspace name we can use if none was configured
+-- create a handler for auth.test (team ID and name)
 local function makeTeamHandler(index)
 	return function(status, body)
 		if status < 0 then
@@ -486,9 +449,7 @@ local function makeTeamHandler(index)
 	end
 end
 
--- create a handler for users.prefs.get, which is where per-channel mute state
--- lives. It arrives as a JSON string inside the prefs blob rather than as
--- fields on the conversations themselves.
+-- create a handler for users.prefs.get (mute state)
 local function makeMutedHandler(index)
 	return function(status, body)
 		if status < 0 then
@@ -557,7 +518,6 @@ local function makeResponseHandler(index, headers, token)
 		-- parse json response
 		local json = hs.json.decode(body)
 
-		-- keep the raw payload around for debugging
 		obj.lastPayloads[index] = json
 
 		if not json.ok then
@@ -573,9 +533,7 @@ local function makeResponseHandler(index, headers, token)
 			return
 		end
 
-		-- the activity count is Slack's own Activity total. activity_v2 is the
-		-- figure behind the Activity tab badge; fall back to the older
-		-- channel_badges sum if a workspace does not return it.
+		-- activity_v2 matches the Activity tab badge; fall back to channel_badges
 		local activityCount = 0
 		local workspaceExtras = {}
 
@@ -598,7 +556,7 @@ local function makeResponseHandler(index, headers, token)
 		table.sort(workspaceExtras, function(a, b) return a.label < b.label end)
 		extras[index] = workspaceExtras
 
-		-- collect unread conversations, and count starred channels among them
+		-- collect unread conversations
 		local starred = starredChannels[index] or {}
 		local workspaceConvos = {}
 		local starredCount = 0
@@ -623,7 +581,7 @@ local function makeResponseHandler(index, headers, token)
 			end
 		end
 
-		-- mentions first, then whatever order Slack gave us
+		-- mentions first
 		table.sort(workspaceConvos, function(a, b) return a.mentions > b.mentions end)
 		convos[index] = workspaceConvos
 
@@ -634,8 +592,6 @@ local function makeResponseHandler(index, headers, token)
 			err = false,
 		}
 
-		-- recomputeUnread fills in unreadCount from the mute list, then
-		-- refreshes the menu bar
 		recomputeUnread()
 	end
 end
@@ -653,7 +609,7 @@ local function onInterval()
 			Cookie = 'd=' .. hs.http.encodeForQuery(workspace.cookieToken)
 		}
 
-		-- the team ID never changes, so look it up once per workspace
+		-- look up the team once
 		if not teams[i] then
 			hs.http.asyncPost(authUrl, data, headers, makeTeamHandler(i))
 		end
@@ -685,10 +641,8 @@ end
 --- Parameters:
 ---  * config - A table containing config values:
 ---             interval:   Interval in seconds to refresh the menu (default 60)
----             workspaces: Array of { name, cookieToken, workspaceToken } tables.
----                         name is optional; it only labels rows when more than
----                         one workspace is configured, and defaults to the
----                         workspace name Slack reports.
+---             workspaces: Array of { name, cookieToken, workspaceToken } tables
+---                         (name is optional)
 ---
 ---             For a single workspace, name, cookieToken, and workspaceToken
 ---             can be provided directly on the config table instead.
